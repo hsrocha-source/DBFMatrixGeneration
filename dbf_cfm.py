@@ -345,16 +345,23 @@ def steering_matrices(params, F, f_hz, d_in, elem_pos, elem_cls, tab_H, tab_V, g
 
 
 # ============================================================================ CFM
-def cfm(A_co, A_x):
-    """Unit-norm CFM weights W (N x K), gain [dBi], cross-pol / co-pol of each beam [dB], and the
-    number of elements holding 99 % of the beam power."""
+def cfm_weights(A_co):
+    """Unit-norm CFM weights W (N x K), gain [dBi], and the number of elements holding 99 % of
+    the beam power."""
     a2 = np.sum(np.abs(A_co)**2, axis=1)
     W = (np.conj(A_co) / np.sqrt(a2)[:, None]).T
     gain = 10 * np.log10(2 * np.pi / ETA0 * a2)
-    xpol = 10 * np.log10(np.abs(np.sum(A_x * W.T, axis=1))**2 / a2 + 1e-30)
     srt = np.sort(np.abs(A_co)**2, axis=1)[:, ::-1]
     n99 = 1 + np.argmax(np.cumsum(srt, axis=1) >= 0.99 * a2[:, None], axis=1)
-    return W.astype(np.complex64), gain, xpol, n99
+    return W.astype(np.complex64), gain, n99
+
+
+def cfm(A_co, A_x):
+    """cfm_weights plus the cross-pol / co-pol response of each beam [dB]."""
+    W, gain, n99 = cfm_weights(A_co)
+    a2 = np.sum(np.abs(A_co)**2, axis=1)
+    xpol = 10 * np.log10(np.abs(np.sum(A_x * W.T, axis=1))**2 / a2 + 1e-30)
+    return W, gain, xpol, n99
 
 
 def beam_grid(az_max, az_step, el_max, el_step):
@@ -464,11 +471,155 @@ def plot_gain_vs_el(out, freqs, az, el, results):
     plt.close(fig)
 
 
+# ============================================================================ sub-band interpolation
+def load_frequency_results(out_dir):
+    """Steering vectors of a previous run: freqs (n_f,), {pol: (n_f, K, N)}, and beam / element metadata."""
+    files = glob.glob(os.path.join(out_dir, 'dbf_cfm_*MHz.npz'))
+    if not files:
+        raise FileNotFoundError(f"no dbf_cfm_*MHz.npz files in {out_dir}")
+    data = sorted((np.load(p) for p in files), key=lambda d: float(d['freq_hz']))
+    ref = data[0]
+    for d in data[1:]:
+        if not (np.array_equal(d['beam_az'], ref['beam_az']) and np.array_equal(d['beam_el'], ref['beam_el'])):
+            raise ValueError(f"{out_dir}: the per-frequency files use different beam grids")
+    freqs = np.array([float(d['freq_hz']) for d in data])
+    A = {pol: np.stack([d[f'A_{pol}'] for d in data]) for pol in ('H', 'V')}
+    meta = {k: ref[k] for k in ('beam_az', 'beam_el', 'az_grid', 'el_grid', 'element_xyz', 'element_class')}
+    meta['F'] = float(ref['F']) if 'F' in ref.files else G.F_OVER_D * G.D
+    return freqs, A, meta
+
+
+def lagrange(freqs, f, n=4):
+    """Indices and coefficients of local polynomial interpolation at f from the n nearest
+    samples (cubic for n = 4; exact at the samples)."""
+    idx = np.sort(np.argsort(np.abs(freqs - f), kind='stable')[:min(n, len(freqs))])
+    x = freqs[idx]
+    c = np.array([np.prod([(f - x[m]) / (x[j] - x[m]) for m in range(len(x)) if m != j]) for j in range(len(x))])
+    return idx, c
+
+
+def remove_bulk_delay(A, freqs, F):
+    """Per-beam bulk delay tau_k = 2F/c + a residual estimated from the mean phase step between
+    neighbouring frequencies, and the steering vectors with that delay removed. The delay is common
+    to all elements of a beam, so it does not change the beam; removing it makes the remaining
+    phase slow enough to interpolate between 15 MHz samples."""
+    tau0 = 2 * F / G.C0
+    Ad = A * np.exp(2j * np.pi * freqs * tau0).astype(np.complex64)[:, None, None]
+    dtau = np.zeros(A.shape[1])
+    if len(freqs) > 1:
+        s = np.sum(Ad[1:] * np.conj(Ad[:-1]), axis=2)                            # (n_f - 1, K)
+        dtau = -np.mean(np.angle(s) / (2 * np.pi * np.diff(freqs))[:, None], axis=0)
+        Ad = Ad * np.exp(2j * np.pi * freqs[:, None] * dtau[None, :]).astype(np.complex64)[..., None]
+    return tau0 + dtau, Ad
+
+
+def interpolation_diagnostics(Ad, freqs):
+    """For de-delayed steering vectors Ad (n_f, K, N):
+      * max_step_deg: largest phase step of a strong element (>= 1 % of the beam's strongest)
+        between neighbouring frequencies; must stay well below 180 deg for interpolation to work.
+      * width_mhz (K,): sub-band width for <= 0.1 dB CFM loss at the sub-band edges, from the
+        power-weighted phase slope of the weights.
+      * loo_db: worst CFM loss per interior frequency when it is interpolated from the others."""
+    p = np.abs(Ad[len(freqs) // 2])**2
+    w = p / p.sum(axis=1, keepdims=True)
+    strong = p >= 0.01 * p.max(axis=1, keepdims=True)
+    step = np.angle(Ad[1:] * np.conj(Ad[:-1]))                                   # (n_f - 1, K, N)
+    max_step = float(np.degrees(np.max(np.abs(step) * strong[None])))
+    slope = np.sqrt(np.max(np.sum(w[None] * (step / (np.diff(freqs) / 1e6)[:, None, None])**2, axis=2), axis=0))
+    phi_edge = np.sqrt(0.1 / (10 / np.log(10)))                                  # 0.1 dB ~ 4.34 phi^2
+    width = 2 * phi_edge / np.maximum(slope, 1e-12)
+    loo = []
+    for i in range(1, len(freqs) - 1):
+        others = np.delete(np.arange(len(freqs)), i)
+        idx, c = lagrange(freqs[others], freqs[i])
+        a = np.tensordot(c.astype(np.complex64), Ad[others[idx]], axes=1)
+        eta = np.abs(np.sum(Ad[i] * np.conj(a), axis=1))**2 / (np.sum(np.abs(Ad[i])**2, axis=1) * np.sum(np.abs(a)**2, axis=1))
+        loo.append(float(np.max(-10 * np.log10(eta))))
+    return dict(max_step_deg=max_step, width_mhz=width, loo_db=loo)
+
+
+def write_subbands(out_dir, step_mhz=None, centres_mhz=None, say=print):
+    """CFM weights at sub-band centres, interpolated from the per-frequency steering vectors in
+    out_dir. Writes out_dir/subbands/subband_<f>MHz.npz, a summary and a gain-vs-frequency plot."""
+    freqs, A, meta = load_frequency_results(out_dir)
+    if centres_mhz:
+        f_out = np.array(centres_mhz, float) * 1e6
+    elif step_mhz:
+        f_out = np.arange(freqs[0], freqs[-1] + 1e3, step_mhz * 1e6)
+    else:
+        raise ValueError("give a sub-band step or the sub-band centres")
+    if f_out.min() < freqs[0] - 1e3 or f_out.max() > freqs[-1] + 1e3:
+        raise ValueError(f"sub-band centres must lie within the computed band "
+                         f"{freqs[0] / 1e6:g} ... {freqs[-1] / 1e6:g} MHz (no extrapolation)")
+    sub = os.path.join(out_dir, 'subbands')
+    os.makedirs(sub, exist_ok=True)
+    log = open(os.path.join(sub, 'summary.txt'), 'w')
+
+    def note(*a):
+        say(*a)
+        print(*a, file=log, flush=True)
+
+    K, N = A['H'].shape[1:]
+    note(f"\n--- Sub-band weights: {len(f_out)} centres {f_out[0] / 1e6:g} ... {f_out[-1] / 1e6:g} MHz from "
+         f"{len(freqs)} computed frequencies ({K} beams, ~{len(f_out) * K * N * 8 * 2 / 1e6:.0f} MB) ---")
+    note(f"  interpolation: local cubic in frequency on the steering vectors, after removing the bulk delay "
+         f"2F/c = {2 * meta['F'] / G.C0 * 1e9:.1f} ns + a per-beam residual")
+    tau, Ad = {}, {}
+    for pol in ('H', 'V'):
+        tau[pol], Ad[pol] = remove_bulk_delay(A[pol], freqs, meta['F'])
+        A[pol] = None                                                            # free memory
+        resid = 1e9 * (tau[pol] - 2 * meta['F'] / G.C0)
+        note(f"  {pol}: per-beam residual delay {resid.min():+.2f} ... {resid.max():+.2f} ns")
+        if len(freqs) < 2:
+            continue
+        d = interpolation_diagnostics(Ad[pol], freqs)
+        note(f"      largest phase step of a strong weight between neighbouring frequencies {d['max_step_deg']:.1f} deg"
+             + ("" if d['max_step_deg'] < 90 else "  [WARNING] > 90 deg: frequency sampling too coarse to interpolate"))
+        if d['loo_db']:
+            note(f"      leave-one-out (each interior frequency from the others): worst CFM loss "
+                 f"{max(d['loo_db']):.3f} dB (pessimistic: the gap is twice the sample spacing)")
+        note(f"      sub-band width for <= 0.1 dB loss at the sub-band edges: worst beam "
+             f"{d['width_mhz'].min():.1f} MHz, median {np.median(d['width_mhz']):.1f} MHz")
+    if len(f_out) > 1:
+        note(f"  sub-band spacing used: {np.min(np.diff(f_out)) / 1e6:g} MHz")
+
+    gains = {'H': [], 'V': []}
+    for f in f_out:
+        idx, c = lagrange(freqs, f)
+        save = {}
+        for pol in ('H', 'V'):
+            a = np.tensordot(c.astype(np.complex64), Ad[pol][idx], axes=1)
+            a = a * np.exp(-2j * np.pi * f * tau[pol]).astype(np.complex64)[:, None]   # put the delay back
+            W, gain, n99 = cfm_weights(a)
+            gains[pol].append(gain)
+            save.update({f'W_{pol}': W, f'gain_{pol}_dBi': gain, f'n99_{pol}': n99, f'tau_bulk_{pol}_s': tau[pol]})
+        np.savez(os.path.join(sub, f'subband_{f / 1e6:.3f}MHz.npz'), freq_hz=f, source_freqs_hz=freqs, **save,
+                 **{k: meta[k] for k in ('beam_az', 'beam_el', 'az_grid', 'el_grid', 'element_xyz', 'element_class')})
+    note(f"  wrote {len(f_out)} files to {sub}")
+
+    beam_az, beam_el, az, el = meta['beam_az'], meta['beam_el'], meta['az_grid'], meta['el_grid']
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for a_, e_ in ((0.0, 0.0), (0.0, el[-1]), (az[-1], el[-1])):
+        k = nearest_beam(beam_az, beam_el, a_, e_)
+        line, = ax.plot(f_out / 1e6, [g[k] for g in gains['H']], label=f'H, beam az {beam_az[k]:g}, el {beam_el[k]:g}')
+        ax.plot(freqs / 1e6, 10 * np.log10(2 * np.pi / ETA0 * np.sum(np.abs(Ad['H'][:, k])**2, axis=1)),
+                'o', color=line.get_color())
+    ax.set_xlabel('frequency [MHz]')
+    ax.set_ylabel('CFM beam gain [dBi]')
+    ax.set_title('Sub-band interpolation (lines) vs computed frequencies (dots)')
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(sub, 'subband_gain.png'), dpi=120)
+    plt.close(fig)
+    log.close()
+
+
 # ============================================================================ main
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--design', required=True, help="reflector design JSON (reflector_go.py)")
-    ap.add_argument('--ffs-dir', required=True, help="folder with the CST .ffs farfield sources")
+    ap.add_argument('--design', help="reflector design JSON (reflector_go.py)")
+    ap.add_argument('--ffs-dir', help="folder with the CST .ffs farfield sources")
     ap.add_argument('--touchstone', help=".sNp file; only used for the power-balance report")
     ap.add_argument('--port-map', default=os.path.join(HERE, 'cst', 'port_map.csv'))
     ap.add_argument('--out', default='dbf_out')
@@ -485,7 +636,20 @@ def main(argv=None):
     ap.add_argument('--beam-block', type=int, default=1024, help="beam directions per GPU block")
     ap.add_argument('--no-blockage', action='store_true')
     ap.add_argument('--save-cross', action='store_true', help="also save the cross-pol steering matrices")
+    ap.add_argument('--subband-step-mhz', type=float, help="also write sub-band weights at this spacing")
+    ap.add_argument('--subband-centers-mhz', type=float, nargs='+', help="... or at these sub-band centres")
+    ap.add_argument('--subbands-only', action='store_true',
+                    help="only (re)compute sub-band weights from the per-frequency files already in --out")
     args = ap.parse_args(argv)
+    subbands = dict(step_mhz=args.subband_step_mhz, centres_mhz=args.subband_centers_mhz)
+
+    if args.subbands_only:
+        if not (args.subband_step_mhz or args.subband_centers_mhz):
+            ap.error("--subbands-only needs --subband-step-mhz or --subband-centers-mhz")
+        write_subbands(args.out, **subbands)
+        return
+    if not (args.design and args.ffs_dir):
+        ap.error("--design and --ffs-dir are required (unless --subbands-only)")
 
     os.makedirs(args.out, exist_ok=True)
     log = open(os.path.join(args.out, 'summary.txt'), 'w')
@@ -590,13 +754,15 @@ def main(argv=None):
                  xpol_H_dB=res['H']['xpol'], xpol_V_dB=res['V']['xpol'], n99_H=res['H']['n99'], n99_V=res['V']['n99'],
                  beam_az=beam_az, beam_el=beam_el, az_grid=az, el_grid=el, freq_hz=f,
                  element_xyz=elem_pos, element_class=np.array(elem_names), time_convention_conjugated=conj,
-                 field_scale=field_scale, design=os.path.abspath(args.design), **extra)
+                 field_scale=field_scale, design=os.path.abspath(args.design), F=F, **extra)
         say(f"  saved {out_npz}")
         plot_frequency(args.out, f_mhz, az, el, res, beam_az, beam_el, cuts)
         for pol in ('H', 'V'):                        # keep only what the summary plot needs
             res[pol] = {'gain': res[pol]['gain']}
 
     plot_gain_vs_el(args.out, freqs, az, el, results)
+    if args.subband_step_mhz or args.subband_centers_mhz:
+        write_subbands(args.out, say=say, **subbands)
     say(f"\nDone. Plots and summary in {args.out}")
     log.close()
 

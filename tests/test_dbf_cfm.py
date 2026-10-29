@@ -122,5 +122,47 @@ def test_end_to_end_dummy(tmp_path):
         assert (out / name).exists()
 
 
+def _synthetic_steering(f, K=6, N=40, seed=0):
+    """Steering vectors that are pure delays: the 2F/c bulk delay, a per-beam offset and small
+    per-element delays, with fixed amplitudes. The exact answer at any frequency is known."""
+    rng = np.random.default_rng(seed)
+    amp = rng.uniform(0.2, 1.0, (K, N))
+    tau = 2 * G.F_OVER_D * G.D / G.C0 + rng.normal(0, 2e-9, (K, 1)) + rng.normal(0, 0.3e-9, (K, N))
+    return (amp * np.exp(-2j * np.pi * f * tau)).astype(np.complex64)
+
+
+def test_lagrange_exact_at_samples_and_for_cubics():
+    x = np.array([1.0, 2.0, 3.5, 4.0, 6.0])
+    for f in x:
+        idx, c = DB.lagrange(x, f)
+        assert np.isclose(np.dot(c, x[idx]**3), f**3) and np.isclose(c.sum(), 1.0)
+    idx, c = DB.lagrange(x, 3.0)
+    assert np.isclose(np.dot(c, (x[idx] - 1)**3 + 2 * x[idx]), (3.0 - 1)**3 + 6.0)
+
+
+def test_subband_interpolation_recovers_exact_weights(tmp_path):
+    freqs = 1225e6 + 15e6 * np.arange(11)
+    K, N = 6, 40
+    for f in freqs:
+        A = _synthetic_steering(f, K, N)
+        np.savez(tmp_path / f"dbf_cfm_{f / 1e6:.1f}MHz.npz", A_H=A, A_V=A, freq_hz=f, F=G.F_OVER_D * G.D,
+                 beam_az=np.zeros(K), beam_el=np.arange(K, dtype=float), az_grid=np.zeros(1),
+                 el_grid=np.arange(K, dtype=float), element_xyz=np.zeros((N, 3)), element_class=np.array(['c'] * N))
+    DB.write_subbands(str(tmp_path), step_mhz=2.5, say=lambda *a: None)
+    sub = tmp_path / "subbands"
+    assert len(list(sub.glob("subband_*MHz.npz"))) == 61 and (sub / "subband_gain.png").exists()
+    DB.write_subbands(str(tmp_path), centres_mhz=[1301.0, 1373.7], say=lambda *a: None)       # off the 2.5 MHz grid
+    for f in (1225e6, 1232.5e6, 1300e6, 1372.5e6, 1301e6, 1373.7e6):
+        r = np.load(sub / f"subband_{f / 1e6:.3f}MHz.npz")
+        a = _synthetic_steering(f, K, N).astype(complex)
+        eta = np.abs(np.einsum('kn,nk->k', a, r['W_H']))**2 / np.sum(np.abs(a)**2, axis=1)
+        assert np.all(eta > 0.9999), (f, eta)                      # interpolated CFM ~ exact CFM
+        np.testing.assert_allclose(np.linalg.norm(r['W_H'], axis=0), 1.0, rtol=1e-5)
+    text = (sub / "summary.txt").read_text()
+    assert "leave-one-out" in text and "WARNING" not in text
+    DB.main(['--out', str(tmp_path), '--subbands-only', '--subband-centers-mhz', '1307.5'])   # CLI path
+    assert (sub / "subband_1307.500MHz.npz").exists()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

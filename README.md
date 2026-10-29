@@ -54,6 +54,22 @@ Outputs per frequency, `dbf_out/dbf_cfm_<f>MHz.npz`:
 | `element_xyz`, `element_class` | (480, 3), (480,) | flight-array element n = j * 10 + i: position (reflector frame) and EEP class used |
 
 Plus `summary.txt` (all checks) and PNG plots (gain maps, weights, pattern cuts, gain vs el).
+
+### Sub-band weights
+
+```bash
+python dbf_cfm.py ... --subband-step-mhz 5                 # during the run, or later without redoing PO:
+python dbf_cfm.py --out dbf_out --subbands-only --subband-step-mhz 5
+python dbf_cfm.py --out dbf_out --subbands-only --subband-centers-mhz 1250 1300 1350
+```
+
+The steering vectors are interpolated in frequency (local cubic over the computed frequencies)
+after removing each beam's bulk delay (2F/c ≈ 38 ns plus a per-beam residual), and the CFM
+weights are rebuilt at each sub-band centre. No extrapolation outside the computed band.
+`dbf_out/subbands/subband_<f>MHz.npz` holds `W_H`, `W_V`, `gain_*_dBi`, `n99_*` and the per-beam
+bulk delay `tau_bulk_*_s` (already included in the weights). `subbands/summary.txt` reports the
+largest phase step between computed frequencies (aliasing check), a leave-one-out interpolation
+loss, and the sub-band width that keeps the loss at the sub-band edges below 0.1 dB.
 Test without CST data: `python tests/dummy_cst.py dummy_ffs` writes a synthetic data set.
 
 In Colab or a notebook, import the modules instead:
