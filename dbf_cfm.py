@@ -515,16 +515,20 @@ def remove_bulk_delay(A, freqs, F):
 
 def interpolation_diagnostics(Ad, freqs):
     """For de-delayed steering vectors Ad (n_f, K, N):
-      * max_step_deg: largest phase step of a strong element (>= 1 % of the beam's strongest)
-        between neighbouring frequencies; must stay well below 180 deg for interpolation to work.
+      * max_step_deg: largest phase step between neighbouring frequencies of an element within
+        10 dB of the beam's strongest; must stay well below 180 deg for interpolation to work.
+      * frac_big: largest share of a beam's power in elements whose phase steps by more than
+        90 deg. Weak elements swept by a null of the focal pattern flip phase; that is harmless
+        while their share is small.
       * width_mhz (K,): sub-band width for <= 0.1 dB CFM loss at the sub-band edges, from the
         power-weighted phase slope of the weights.
       * loo_db: worst CFM loss per interior frequency when it is interpolated from the others."""
     p = np.abs(Ad[len(freqs) // 2])**2
     w = p / p.sum(axis=1, keepdims=True)
-    strong = p >= 0.01 * p.max(axis=1, keepdims=True)
+    strong = p >= 0.1 * p.max(axis=1, keepdims=True)
     step = np.angle(Ad[1:] * np.conj(Ad[:-1]))                                   # (n_f - 1, K, N)
     max_step = float(np.degrees(np.max(np.abs(step) * strong[None])))
+    frac_big = float(np.max(np.sum(w[None] * (np.abs(step) > np.pi / 2), axis=2)))
     slope = np.sqrt(np.max(np.sum(w[None] * (step / (np.diff(freqs) / 1e6)[:, None, None])**2, axis=2), axis=0))
     phi_edge = np.sqrt(0.1 / (10 / np.log(10)))                                  # 0.1 dB ~ 4.34 phi^2
     width = 2 * phi_edge / np.maximum(slope, 1e-12)
@@ -535,7 +539,7 @@ def interpolation_diagnostics(Ad, freqs):
         a = np.tensordot(c.astype(np.complex64), Ad[others[idx]], axes=1)
         eta = np.abs(np.sum(Ad[i] * np.conj(a), axis=1))**2 / (np.sum(np.abs(Ad[i])**2, axis=1) * np.sum(np.abs(a)**2, axis=1))
         loo.append(float(np.max(-10 * np.log10(eta))))
-    return dict(max_step_deg=max_step, width_mhz=width, loo_db=loo)
+    return dict(max_step_deg=max_step, frac_big=frac_big, width_mhz=width, loo_db=loo)
 
 
 def write_subbands(out_dir, step_mhz=None, centres_mhz=None, say=print):
@@ -573,11 +577,14 @@ def write_subbands(out_dir, step_mhz=None, centres_mhz=None, say=print):
         if len(freqs) < 2:
             continue
         d = interpolation_diagnostics(Ad[pol], freqs)
-        note(f"      largest phase step of a strong weight between neighbouring frequencies {d['max_step_deg']:.1f} deg"
-             + ("" if d['max_step_deg'] < 90 else "  [WARNING] > 90 deg: frequency sampling too coarse to interpolate"))
+        note(f"      largest phase step between neighbouring frequencies, elements within 10 dB of the strongest: "
+             f"{d['max_step_deg']:.1f} deg; beam power in elements stepping > 90 deg: max {100 * d['frac_big']:.2f} %")
         if d['loo_db']:
             note(f"      leave-one-out (each interior frequency from the others): worst CFM loss "
                  f"{max(d['loo_db']):.3f} dB (pessimistic: the gap is twice the sample spacing)")
+        if d['frac_big'] > 0.01 or (d['loo_db'] and max(d['loo_db']) > 0.1):
+            note("      [WARNING] the frequency sampling is too coarse to interpolate reliably: "
+                 "compute more frequencies or use the computed ones directly")
         note(f"      sub-band width for <= 0.1 dB loss at the sub-band edges: worst beam "
              f"{d['width_mhz'].min():.1f} MHz, median {np.median(d['width_mhz']):.1f} MHz")
     if len(f_out) > 1:
