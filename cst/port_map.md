@@ -14,7 +14,8 @@ the 17 elements whose embedded element patterns were exported.
 * `x_index` / `y_index` are 0-based (`col−1`, `row−1`).
 * `eep_class`: `corner_*`, `edge_*`, `n1_*` (one element in from that edge or corner), `centre`;
   B / T / L / R = bottom / top / left / right. Empty means the port was not excited.
-* Which physical direction H and V correspond to (x or y) is not recorded here. Add it once confirmed.
+* H ports are polarized along x (the 10-element axis), V ports along y (the 48-element axis; 8 in
+  the CST model).
 
 ## Simulated elements
 
