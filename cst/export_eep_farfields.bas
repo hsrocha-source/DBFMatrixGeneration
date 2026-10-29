@@ -31,6 +31,7 @@ Sub Main
 			base = outDir & FileLabel(label)
 			With FarfieldPlot
 				.Reset
+				.Plottype "3d"                    ' .ffs export needs a 3D farfield plot
 				.SetPlotMode "efield"
 				.Origin "free"                    ' one common phase reference for every element:
 				.Userorigin "0", "0", "0"         ' the CST global origin (de-embed per element later)
