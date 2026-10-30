@@ -55,6 +55,13 @@ Outputs per frequency, `dbf_out/dbf_cfm_<f>MHz.npz`:
 
 Plus `summary.txt` (all checks) and PNG plots (gain maps, weights, pattern cuts, gain vs el).
 
+### Google Colab
+
+`DBF_colab.ipynb` runs the whole thing on the data in Google Drive (`My Drive/DBF_generation/` with
+`EEP_ffs/` and the `.s160p` file) and copies the results back there. Open it via Colab's
+*File → Open notebook → GitHub* (tick *Include private repos*), add a read-only GitHub token as the
+Colab secret `GITHUB_TOKEN` (steps in the notebook's first cell), choose a T4 GPU runtime and *Run all*.
+
 ### Sub-band weights
 
 ```bash
