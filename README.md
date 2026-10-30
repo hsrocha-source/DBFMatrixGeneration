@@ -34,9 +34,11 @@ python dbf_cfm.py --design designs/design_fD0.38.json --ffs-dir EEP_ffs \
     --touchstone model.s160p --out dbf_out
 ```
 
-* `--cst-array-center X Y Z`: CST coordinates [m] of the centre of the simulated 10 x 8 array
-  (default 0 0 0). Used to de-embed each pattern to its own element; the summary's phase-centre
-  table shows whether it is right (offsets of a few mm are fine).
+* The position of the simulated 10 x 8 array in CST and the time convention are found from the
+  patterns: each element's phase centre is fitted and compared with the port-map layout. The
+  summary prints the estimated centre and every element's residual (a few mm to a few cm is
+  normal). Override with `--cst-array-center X Y Z` [m] and `--time-convention +jwt|-jwt`;
+  `--cst-array-z` sets the array-plane z used with the estimate (default 0).
 * Beam grid: `--az-max 3 --az-step 0.5 --el-max 15 --el-step 0.1` (defaults, 3913 beams).
 * `--samples-per-lam 4` (PO surface sampling), `--chunk`, `--beam-block` (GPU memory).
 * The S-parameters only feed the power-balance report.
