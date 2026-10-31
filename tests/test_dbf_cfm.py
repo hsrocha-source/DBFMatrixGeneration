@@ -92,17 +92,37 @@ def test_po_gain_matches_silver_formula(tmp_path):
     assert abs(A['H_x'][0, 0]) < 1e-3 * abs(A['H_co'][0, 0])         # Huygens feed: no cross-pol
 
 
-def test_time_convention_detected(tmp_path):
-    out = dummy_cst.make_dataset(str(tmp_path), [1300e6], step_deg=3.0, convention='-jwt')
-    pm = read_port_map(dummy_cst.PORT_MAP)
-    classes = [r for r in pm if r['eep_class']]
-    cst_pos = np.array([DB.cst_element_centre(c['col'], c['row'], 10, 8, (0, 0, 0)) for c in classes])
+def _classes_and_layout(port_map_rows):
+    classes = [r for r in port_map_rows if r['eep_class']]
+    layout = np.array([DB.cst_element_centre(c['col'], c['row'], 10, 8, (0, 0, 0)) for c in classes])
+    return classes, layout
+
+
+@pytest.mark.parametrize('convention', ['+jwt', '-jwt'])
+def test_locate_array_finds_centre_and_convention(tmp_path, convention):
+    centre = np.array([4.5, 3.5, 0.0]) * G.ELEMENT_PITCH            # element 1 at the CST origin
+    out = dummy_cst.make_dataset(str(tmp_path), [1300e6], step_deg=3.0, convention=convention, cst_center=centre)
+    classes, layout = _classes_and_layout(read_port_map(dummy_cst.PORT_MAP))
     eeps = DB.EEPIndex(out, {c[f'port_{p}'] for c in classes for p in ('H', 'V')})
-    assert DB.phase_reference_check(eeps, classes, cst_pos, 1300e6, 'auto', say=lambda *a: None) is True
+    conj, found = DB.locate_array(eeps, classes, layout, 1300e6, None, 0.0, 'auto', say=lambda *a: None)
+    assert conj == (convention == '-jwt')
+    np.testing.assert_allclose(found, centre, atol=3e-3)
+
+
+def test_locate_array_rejects_wrong_orientation(tmp_path):
+    out = dummy_cst.make_dataset(str(tmp_path), [1300e6], step_deg=3.0)
+    rows = read_port_map(dummy_cst.PORT_MAP)
+    for r in rows:                                                  # port map upside down
+        r['row'] = 9 - r['row']
+    classes, layout = _classes_and_layout(rows)
+    eeps = DB.EEPIndex(out, {c[f'port_{p}'] for c in classes for p in ('H', 'V')})
+    with pytest.raises(ValueError, match='do not follow'):
+        DB.locate_array(eeps, classes, layout, 1300e6, None, 0.0, 'auto', say=lambda *a: None)
 
 
 def test_end_to_end_dummy(tmp_path):
-    data = dummy_cst.make_dataset(str(tmp_path / "ffs"), [1300e6], step_deg=3.0)
+    data = dummy_cst.make_dataset(str(tmp_path / "ffs"), [1300e6], step_deg=3.0,
+                                  cst_center=(4.5 * G.ELEMENT_PITCH, 3.5 * G.ELEMENT_PITCH, 0.0))   # off-centre
     out = tmp_path / "out"
     DB.main(['--design', os.path.join(os.path.dirname(HERE), 'designs', 'design_fD0.38.json'),
              '--ffs-dir', data, '--touchstone', os.path.join(data, 'dummy.s160p'), '--out', str(out),
@@ -117,7 +137,9 @@ def test_end_to_end_dummy(tmp_path):
     eff0 = 10**(r['gain_H_dBi'][np.argmin(r['beam_az']**2 + r['beam_el']**2)] / 10) / (4 * np.pi**2 * (G.D / 2)**2 / lam**2)
     assert 0.5 < eff0 < 1.0
     text = (out / "summary.txt").read_text()
-    assert "e^{+jwt}" in text and "peak phasors" in text
+    assert "e^{+jwt}" in text and "peak phasors" in text and "estimated from the patterns" in text
+    g = dict(zip(zip(r['beam_az'], r['beam_el']), r['gain_H_dBi']))
+    assert abs(g[(3.0, 0.0)] - g[(-3.0, 0.0)]) < 0.05 and abs(g[(0.0, 15.0)] - g[(0.0, -15.0)]) < 0.05   # no squint
     for name in ("gain_map_H_1300MHz.png", "weights_H_1300MHz.png", "cuts_H_1300MHz.png", "gain_vs_el.png"):
         assert (out / name).exists()
 

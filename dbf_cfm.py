@@ -20,6 +20,10 @@ Usage
     python dbf_cfm.py --design designs/design_fD0.38.json --ffs-dir EEP_ffs \\
         --touchstone model.s160p --out dbf_out
 
+The position of the simulated array in CST and the time convention are estimated from the
+patterns (each element's phase centre against the port-map layout); override them with
+--cst-array-center X Y Z and --time-convention.
+
 Outputs in --out: dbf_cfm_<f>MHz.npz per frequency, summary.txt, PNG plots.
 """
 import argparse
@@ -159,55 +163,74 @@ def roughness(e, r_hat, k, delta, mask):
     return (d_t[m_t].sum() + d_p[m_p].sum()) / (np.abs(ee[mask])**2).sum()
 
 
-def phase_reference_check(eeps, classes, cst_pos, f_hz, mode, say):
-    """Decide the time convention from the phase slope of the displaced elements, and fit each
-    element's apparent phase centre to check the assumed CST positions. Returns conj (bool)."""
+def locate_array(eeps, classes, layout, f_hz, centre, z, mode, say):
+    """Time convention and CST position of the simulated array, from the patterns themselves.
+
+    Each EEP's phase carries its element's position: the displacement that makes the de-embedded
+    field smoothest is the element's apparent phase centre. Under the right time convention the
+    phase centres follow the known layout, so (phase centre - layout offset) is the same point for
+    every element: the array centre. Under the wrong convention they come out point-mirrored and
+    that difference scatters by the size of the array.
+
+    layout: (C, 3) element offsets from the array centre in the CST frame. centre: None to use
+    the estimate, or the (x, y, z) to use. z: array-plane z for the estimate. mode: 'auto',
+    '+jwt' or '-jwt'. Returns (conj, centre_used)."""
     from scipy.optimize import minimize
     k = 2 * np.pi * f_hz / G.C0
-    rows, votes = [], []
-    for c, cls in enumerate(classes):
+    guess = np.array([0.0, 0.0, z]) if centre is None else np.asarray(centre, float)
+    data = []
+    for cls in classes:
         src, fi = eeps.get(cls['port_H'], f_hz)
         e, r_hat, _ = field_cartesian(src, fi)
-        mask = (src.theta <= np.radians(70.0))[:, None] & np.ones(len(src.phi), bool)[None, :]
-        delta = cst_pos[c] - src.position
-        s_plus, s_minus = roughness(e, r_hat, k, delta, mask), roughness(np.conj(e), r_hat, k, delta, mask)
-        if k * np.linalg.norm(delta[:2]) > np.pi:          # displacement large enough to tell
-            votes.append(s_minus / s_plus)
-        rows.append((cls['eep_class'], src, fi, e, r_hat, mask, delta, s_plus, s_minus))
+        rows = src.theta <= np.radians(72.0)                   # the cone the reflector subtends
+        data.append((e[rows], r_hat[rows], src.position))
 
+    def implied_centres(conj):
+        est = []
+        for c, (e, r_hat, pos) in enumerate(data):
+            ee = np.conj(e) if conj else e
+            mask = np.ones(ee.shape[:2], bool)
+            d0 = guess + layout[c] - pos                       # displacement from the file's phase reference
+            res = minimize(lambda v: roughness(ee, r_hat, k, np.array([v[0], v[1], d0[2]]), mask), d0[:2],
+                           method='Nelder-Mead', options=dict(xatol=1e-4, fatol=1e-10, maxiter=600))
+            est.append(res.x + pos[:2] - layout[c][:2])
+        est = np.array(est)
+        xy = np.median(est, axis=0)
+        return xy, float(np.median(np.linalg.norm(est - xy, axis=1))), est
+
+    hyps = ('+jwt', '-jwt') if mode == 'auto' else (mode,)
+    fits = {h: implied_centres(h == '-jwt') for h in hyps}
+    best = min(fits, key=lambda h: fits[h][1])
+    xy, spread, est = fits[best]
+    if spread > G.ELEMENT_PITCH:
+        raise ValueError(
+            "the phase centres of the simulated elements do not follow the 10 x 8 layout of the port map"
+            + (" under either time convention" if mode == 'auto' else f" with {mode}")
+            + f" (median scatter {1e3 * spread:.0f} mm). Check the port map orientation (which corner is"
+            " port 1, H along x) and the units of the .ffs position.")
     if mode == 'auto':
-        if not votes:
-            say("  time convention: all elements sit at their phase reference, cannot tell; assuming e^{+jwt}")
-            conj = False
-        else:
-            r = np.median(votes)
-            if r > 2.0:
-                conj = False
-                say(f"  time convention: e^{{+jwt}} (de-embedded fields {r:.1f}x smoother than with the opposite sign)")
-            elif r < 0.5:
-                conj = True
-                say(f"  time convention: e^{{-jwt}} (opposite sign {1 / r:.1f}x smoother); fields are conjugated")
-            else:
-                conj = False
-                say(f"  [WARNING] time convention unclear (ratio {r:.2f}); assuming e^{{+jwt}}. "
-                    "Check --cst-array-center and the units of the .ffs position.")
+        other = fits['-jwt' if best == '+jwt' else '+jwt'][1]
+        say(f"  time convention: e^{{{best[0]}jwt}} (element phase centres follow the layout to {1e3 * spread:.1f} mm; "
+            f"{1e3 * other:.0f} mm with the opposite sign)" + ("; fields are conjugated" if best == '-jwt' else ""))
     else:
-        conj = mode == '-jwt'
         say(f"  time convention: {mode} (set on the command line)")
 
-    say(f"  apparent phase centre (x, y) minus assumed element centre, H ports, {f_hz / 1e6:.0f} MHz:")
-    worst = 0.0
-    for name, src, fi, e, r_hat, mask, delta, s_plus, s_minus in rows:
-        ee = np.conj(e) if conj else e
-        res = minimize(lambda v: roughness(ee, r_hat, k, np.array([v[0], v[1], delta[2]]), mask),
-                       delta[:2], method='Nelder-Mead', options=dict(xatol=1e-4, fatol=1e-9, maxiter=400))
-        off = (res.x - delta[:2]) * 1e3
-        worst = max(worst, np.hypot(*off))
-        say(f"    {name:<14} dx {off[0]:7.1f} mm  dy {off[1]:7.1f} mm")
-    if worst > 0.5e3 * G.ELEMENT_PITCH:
-        say("  [WARNING] some phase centres are more than half a pitch from the assumed element centres:"
-            " check --cst-array-center and the port map orientation.")
-    return conj
+    estimate = np.array([xy[0], xy[1], guess[2]])
+    if centre is None:
+        used = estimate
+        say(f"  CST array centre estimated from the patterns: x {estimate[0]:+.4f} m, y {estimate[1]:+.4f} m "
+            f"(z {estimate[2]:+.4f} m as given)")
+    else:
+        used = guess
+        say(f"  CST array centre as given: {used.round(4).tolist()} m; estimate from the patterns "
+            f"x {estimate[0]:+.4f}, y {estimate[1]:+.4f} m")
+        if np.hypot(*(estimate[:2] - used[:2])) > 0.5 * G.ELEMENT_PITCH:
+            say("  [WARNING] the given centre is more than half a pitch from the estimate: the beams will be"
+                " squinted and lose gain. Use --cst-array-center auto unless you are sure.")
+    say(f"  apparent phase centre minus element centre (H ports, {f_hz / 1e6:.0f} MHz):")
+    for cls, (dx, dy) in zip(classes, (est - used[:2]) * 1e3):
+        say(f"    {cls['eep_class']:<14} dx {dx:7.1f} mm  dy {dy:7.1f} mm")
+    return best == '-jwt', used
 
 
 def pattern_table(eeps, classes, cst_pos, f_hz, conj, field_scale):
@@ -630,8 +653,11 @@ def main(argv=None):
     ap.add_argument('--touchstone', help=".sNp file; only used for the power-balance report")
     ap.add_argument('--port-map', default=os.path.join(HERE, 'cst', 'port_map.csv'))
     ap.add_argument('--out', default='dbf_out')
-    ap.add_argument('--cst-array-center', type=float, nargs=3, default=(0.0, 0.0, 0.0), metavar=('X', 'Y', 'Z'),
-                    help="CST coordinates [m] of the centre of the simulated array (element plane)")
+    ap.add_argument('--cst-array-center', nargs='+', default=['auto'], metavar='auto|X Y Z',
+                    help="CST coordinates [m] of the centre of the simulated array; 'auto' (default) "
+                         "estimates x and y from the patterns")
+    ap.add_argument('--cst-array-z', type=float, default=0.0,
+                    help="CST z [m] of the array plane, used with --cst-array-center auto")
     ap.add_argument('--time-convention', choices=('auto', '+jwt', '-jwt'), default='auto')
     ap.add_argument('--freqs-mhz', type=float, nargs='*', help="subset of frequencies (default: all found)")
     ap.add_argument('--az-max', type=float, default=G.REQ_AZ_MAX)
@@ -648,6 +674,12 @@ def main(argv=None):
     ap.add_argument('--subbands-only', action='store_true',
                     help="only (re)compute sub-band weights from the per-frequency files already in --out")
     args = ap.parse_args(argv)
+    if args.cst_array_center == ['auto']:
+        centre_arg = None
+    elif len(args.cst_array_center) == 3:
+        centre_arg = [float(v) for v in args.cst_array_center]
+    else:
+        ap.error("--cst-array-center takes 'auto' or three numbers X Y Z")
     subbands = dict(step_mhz=args.subband_step_mhz, centres_mhz=args.subband_centers_mhz)
 
     if args.subbands_only:
@@ -673,8 +705,7 @@ def main(argv=None):
     classes = [r for r in pm if r['eep_class']]
     n_cols, n_rows = max(r['col'] for r in pm), max(r['row'] for r in pm)
     names = [c['eep_class'] for c in classes]
-    cst_pos = np.array([cst_element_centre(c['col'], c['row'], n_cols, n_rows, args.cst_array_center)
-                        for c in classes])
+    layout = np.array([cst_element_centre(c['col'], c['row'], n_cols, n_rows, (0.0, 0.0, 0.0)) for c in classes])
     ports = [c[f'port_{p}'] for c in classes for p in ('H', 'V')]
     say(f"Port map: {args.port_map} ({n_cols} x {n_rows} CST model, {len(classes)} EEP classes, {len(ports)} ports)")
 
@@ -695,7 +726,9 @@ def main(argv=None):
 
     say(f"\n--- Checks at {f_mid / 1e6:.0f} MHz ---")
     field_scale = power_convention(eeps, ports, f_mid, say)
-    conj = phase_reference_check(eeps, classes, cst_pos, f_mid, args.time_convention, say)
+    conj, cst_centre = locate_array(eeps, classes, layout, f_mid, centre_arg, args.cst_array_z,
+                                    args.time_convention, say)
+    cst_pos = layout + cst_centre
     centre = classes[names.index('centre')]
     for f in freqs:
         src, fi = eeps.get(centre['port_H'], f)
@@ -761,7 +794,8 @@ def main(argv=None):
                  xpol_H_dB=res['H']['xpol'], xpol_V_dB=res['V']['xpol'], n99_H=res['H']['n99'], n99_V=res['V']['n99'],
                  beam_az=beam_az, beam_el=beam_el, az_grid=az, el_grid=el, freq_hz=f,
                  element_xyz=elem_pos, element_class=np.array(elem_names), time_convention_conjugated=conj,
-                 field_scale=field_scale, design=os.path.abspath(args.design), F=F, **extra)
+                 field_scale=field_scale, design=os.path.abspath(args.design), F=F,
+                 cst_array_center=cst_centre, **extra)
         say(f"  saved {out_npz}")
         plot_frequency(args.out, f_mhz, az, el, res, beam_az, beam_el, cuts)
         for pol in ('H', 'V'):                        # keep only what the summary plot needs
