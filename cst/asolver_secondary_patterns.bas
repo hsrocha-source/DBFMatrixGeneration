@@ -18,8 +18,10 @@ Option Explicit
 
 Const JOB_DIR = ""             ' empty: <project folder>\asolver\
 Const SOURCE_NAME = "eep"
-Const STEP_THETA = "0.2"       ' export grid [deg]
-Const STEP_PHI = "1"
+Const STEP_THETA = "0.2"       ' export grid [deg]. Set the asymptotic solver's Monitor Sampling to the
+                               ' same grid (theta 0..20 step 0.2, phi 0..360 step 0.5): it only computes
+                               ' the far field there, and the export would otherwise interpolate.
+Const STEP_PHI = "0.5"
 Const THETA_KEEP = 20          ' keep theta <= THETA_KEEP deg in the stored files (0: keep the full sphere)
 Const MAX_JOBS = 0             ' 0: run all remaining jobs; e.g. 2 for a first test
 

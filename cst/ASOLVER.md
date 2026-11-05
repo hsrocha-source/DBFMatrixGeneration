@@ -12,7 +12,9 @@ asymptotic solver, as an independent check of the PO steering matrices in `dbf_c
    `.zip` of it in `DBF_generation/asolver_<date>_<time>` on Drive, with the macro included;
    rename it to `asolver` next to the CST project.
 2. In `shaped_reflector.cst`: units m / GHz, reflector vertex at the origin opening toward +z, PEC,
-   asymptotic solver settings chosen once in the GUI. The array plane is at
+   asymptotic solver settings chosen once in the GUI: mode *Field sources*, a frequency sweep covering
+   the job frequencies (e.g. 1.3 to 1.3 GHz), and *Monitor Sampling* theta 0 to 20 deg step 0.2,
+   phi 0 to 360 deg step 0.5 (the beams are ~0.9 deg wide; the solver only computes these points). The array plane is at
    `array_plane_z_m` of `manifest.json` (5.6062 m for the committed design).
 3. Run `cst/asolver_secondary_patterns.bas` with `MAX_JOBS = 2` first, check `asolver/results`,
    then with `MAX_JOBS = 0`. Finished jobs are skipped, so it can be stopped and restarted.
@@ -29,7 +31,7 @@ asymptotic solver (`AsymptoticSolver.Start`), and the farfield export (`Step` / 
 | `jobs.csv` | `job, element, i, j, eep_class, pol, port, freq_ghz, x_m, y_m, z_m, source_file`; element n = j * 10 + i as in `dbf_cfm.py` |
 | `sources/eep_<class>_<pol>_f<GHz>.ffs` | CST pattern of that class, phase reference moved to its element centre, 1 W stimulated power, CST's own conventions |
 | `manifest.json` | design, array-plane z, source orientation, CST array centre and time convention found from the patterns, normalization |
-| `results/job<N>.ffs` | A-solver far field of job N: CST farfield-source format, theta from +z, phase reference at the vertex (CST origin), theta <= 20 deg kept |
+| `results/job<N>.ffs` | A-solver far field of job N: CST farfield-source format, theta from +z, phase reference at the vertex (CST origin), theta 0 to 20 deg, 0.2 deg x 0.5 deg grid |
 | `results/log.txt` | run time per job |
 
 ## Reading the results (for the comparison script)
