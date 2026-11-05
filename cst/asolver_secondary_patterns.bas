@@ -76,15 +76,20 @@ Sub RunJob(f As Variant, jobDir As String, outDir As String)
 	FarfieldSource.Delete SOURCE_NAME
 	On Error GoTo 0
 
-	With FarfieldSource
+	With FarfieldSource                                   ' as CST's History List writes it
 		.Reset
 		.Name SOURCE_NAME
 		.Id "1"
-		.UseCopyOnly "false"
-		.Setpos Trim(f(8)), Trim(f(9)), Trim(f(10))
-		.Settheta "0", "0", "-1"                         ' element broadside (+z in the EEP file) -> -z
-		.Setphi "1", "0", "0"                            ' element +x (H polarization) stays +x
+		.UseCopyOnly "true"
+		.SetPosition Trim(f(8)), Trim(f(9)), Trim(f(10))
+		.SetTheta0XYZ "0", "0", "-1"                    ' element broadside (+z in the EEP file) -> -z
+		.SetPhi0XYZ "1", "0", "0"                       ' element +x (H polarization) stays +x
 		.Import jobDir & "sources\" & Trim(f(11))
+		.UseMultipoleFFS "true"
+		.SetAlignmentType "user"
+		.SetMultipoleDegree "1"
+		.SetMultipoleCalcMode "automatic"
+		.UseForSimulation "true"
 		.Store
 	End With
 
