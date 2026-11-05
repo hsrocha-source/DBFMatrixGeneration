@@ -88,7 +88,7 @@ Sub RunJob(f As Variant, jobDir As String, outDir As String)
 		.Store
 	End With
 
-	ASolver.Start
+	StartAsymptoticSolver
 
 	item = FindFarfield(freq)
 	If item = "" Then Err.Raise 1000, , "no farfield result at " & freq & " GHz after job " & f(0)
@@ -111,6 +111,24 @@ Sub RunJob(f As Variant, jobDir As String, outDir As String)
 	Else
 		Name tmp As outDir & "job" & f(0) & ".ffs"
 	End If
+End Sub
+
+' Start the asymptotic solver. The name of its macro object differs between CST versions: this
+' tries AsymptoticSolver, then ASolver. If both fail, look up the asymptotic solver object in CST's
+' Help (VBA language reference, solver objects) and use its Start method here.
+Sub StartAsymptoticSolver()
+	Dim e1 As String
+	On Error Resume Next
+	Err.Clear
+	AsymptoticSolver.Start
+	If Err.Number = 0 Then Exit Sub
+	e1 = Err.Description
+	Err.Clear
+	ASolver.Start
+	If Err.Number = 0 Then Exit Sub
+	On Error GoTo 0
+	Err.Raise 1001, , "could not start the asymptotic solver (AsymptoticSolver.Start: " & e1 & _
+		"). Find the asymptotic solver object in CST's VBA help and change StartAsymptoticSolver."
 End Sub
 
 ' Tree path of the farfield result at freq [GHz], e.g. "Farfields\farfield (f=1.3) [eep]".

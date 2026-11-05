@@ -20,7 +20,7 @@ asymptotic solver, as an independent check of the PO steering matrices in `dbf_c
 The macro has not been run here (no CST). If a call fails in your CST version, compare it with the
 History List entry CST writes when you do the same step by hand: defining a farfield source
 (`Setpos`, `Settheta` = where the source's +z points, `Setphi` = where its +x points), starting the
-asymptotic solver (`ASolver.Start`), and the farfield export (`Step` / `Step2` = theta / phi step).
+asymptotic solver (`StartAsymptoticSolver` tries `AsymptoticSolver.Start`, then `ASolver.Start`), and the farfield export (`Step` / `Step2` = theta / phi step).
 
 ## Files
 
