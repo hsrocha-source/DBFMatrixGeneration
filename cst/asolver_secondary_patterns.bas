@@ -76,19 +76,24 @@ Sub RunJob(f As Variant, jobDir As String, outDir As String)
 	FarfieldSource.Delete SOURCE_NAME
 	On Error GoTo 0
 
-	With FarfieldSource
+	With FarfieldSource                                   ' as CST's History List writes it
 		.Reset
 		.Name SOURCE_NAME
 		.Id "1"
-		.UseCopyOnly "false"
-		.Setpos Trim(f(8)), Trim(f(9)), Trim(f(10))
-		.Settheta "0", "0", "-1"                         ' element broadside (+z in the EEP file) -> -z
-		.Setphi "1", "0", "0"                            ' element +x (H polarization) stays +x
+		.UseCopyOnly "true"
+		.SetPosition Trim(f(8)), Trim(f(9)), Trim(f(10))
+		.SetTheta0XYZ "0", "0", "-1"                    ' element broadside (+z in the EEP file) -> -z
+		.SetPhi0XYZ "1", "0", "0"                       ' element +x (H polarization) stays +x
 		.Import jobDir & "sources\" & Trim(f(11))
+		.UseMultipoleFFS "true"
+		.SetAlignmentType "user"
+		.SetMultipoleDegree "1"
+		.SetMultipoleCalcMode "automatic"
+		.UseForSimulation "true"
 		.Store
 	End With
 
-	ASolver.Start
+	StartAsymptoticSolver
 
 	item = FindFarfield(freq)
 	If item = "" Then Err.Raise 1000, , "no farfield result at " & freq & " GHz after job " & f(0)
@@ -111,6 +116,12 @@ Sub RunJob(f As Variant, jobDir As String, outDir As String)
 	Else
 		Name tmp As outDir & "job" & f(0) & ".ffs"
 	End If
+End Sub
+
+' Start the asymptotic solver (CST macro object AsymptoticSolver; the older name ASolver does not
+' compile in current versions).
+Sub StartAsymptoticSolver()
+	AsymptoticSolver.Start
 End Sub
 
 ' Tree path of the farfield result at freq [GHz], e.g. "Farfields\farfield (f=1.3) [eep]".
