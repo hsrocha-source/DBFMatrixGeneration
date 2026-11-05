@@ -8,6 +8,9 @@ asymptotic solver, as an independent check of the PO steering matrices in `dbf_c
 1. `python cst/make_asolver_jobs.py --ffs-dir EEP_ffs --out asolver`
    (defaults: 1.3 GHz, H and V, all 480 elements = 960 jobs; `--freqs-ghz`, `--pols`,
    `--elements 0-9,236` to change). Copy the `asolver` folder next to `shaped_reflector.cst`.
+   The Colab notebook (`DBF_colab.ipynb`, section 9) does this step too and puts the folder and a
+   `.zip` of it in `DBF_generation/asolver_<date>_<time>` on Drive, with the macro included;
+   rename it to `asolver` next to the CST project.
 2. In `shaped_reflector.cst`: units m / GHz, reflector vertex at the origin opening toward +z, PEC,
    asymptotic solver settings chosen once in the GUI. The array plane is at
    `array_plane_z_m` of `manifest.json` (5.6062 m for the committed design).
