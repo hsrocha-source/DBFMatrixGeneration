@@ -34,6 +34,7 @@ class FarfieldSource:
     phi: np.ndarray             # (n_phi,) rad, ascending, one full period without the 2*pi duplicate
     e_theta: np.ndarray         # (n_f, n_theta, n_phi) complex
     e_phi: np.ndarray
+    freqs_raw: np.ndarray = None    # frequencies exactly as written in the header
 
     @property
     def port(self):
@@ -124,7 +125,7 @@ def read_ffs(path, header_only=False):
         empty = np.zeros((n_f, 0, 0), complex)
         return FarfieldSource(path=str(path), position=position, x_axis=x_axis, z_axis=z_axis,
                               freqs=np.array([_to_hz(f) for f in powers[:, 3]]),
-                              p_rad=powers[:, 0], p_acc=powers[:, 1], p_stim=powers[:, 2],
+                              p_rad=powers[:, 0], p_acc=powers[:, 1], p_stim=powers[:, 2], freqs_raw=powers[:, 3],
                               theta=np.zeros(0), phi=np.zeros(0), e_theta=empty, e_phi=empty)
     if powers is None or not blocks:
         raise ValueError(f"{path}: no power block or no field data found - not a CST farfield source?")
@@ -152,8 +153,29 @@ def read_ffs(path, header_only=False):
 
     return FarfieldSource(path=str(path), position=position, x_axis=x_axis, z_axis=z_axis,
                           freqs=np.array([_to_hz(f) for f in powers[:, 3]]),
-                          p_rad=powers[:, 0], p_acc=powers[:, 1], p_stim=powers[:, 2],
+                          p_rad=powers[:, 0], p_acc=powers[:, 1], p_stim=powers[:, 2], freqs_raw=powers[:, 3],
                           theta=np.radians(th_deg), phi=np.radians(phi_deg), e_theta=e_th, e_phi=e_ph)
+
+
+def write_ffs(path, theta_deg, phi_deg, e_theta, e_phi, freq_hz, p_rad, p_acc, p_stim, position=(0, 0, 0),
+              x_axis=(1, 0, 0), z_axis=(0, 0, 1)):
+    """Write a single-frequency CST farfield source (version 3.0 layout): fields r*E [V] on the
+    (theta, phi) grid, (n_theta, n_phi). phi_deg should include 360 like CST exports do.
+    freq_hz is written as given (use the source file's raw value to keep its unit)."""
+    hdr = ["// CST Farfield Source File", " ", "// Version:", "3.0", " ", "// Data Type", "Farfield", " ",
+           "// #Frequencies", "1", " ", "// Position", " ".join(f"{v:.6e}" for v in position), " ",
+           "// zAxis", " ".join(f"{v:.6e}" for v in z_axis), " ",
+           "// xAxis", " ".join(f"{v:.6e}" for v in x_axis), " ",
+           "// Radiated/Accepted/Stimulated Power , Frequency",
+           f"{p_rad:.8e}", f"{p_acc:.8e}", f"{p_stim:.8e}", f"{freq_hz:.8e}", " ", " ",
+           "// >> Total #phi samples, total #theta samples", f"{len(phi_deg)} {len(theta_deg)}", " ",
+           "// >> Phi, Theta, Re(E_Theta), Im(E_Theta), Re(E_Phi), Im(E_Phi): "]
+    PH, TH = np.meshgrid(phi_deg, theta_deg, indexing='ij')            # phi outer, theta inner
+    et, ep = e_theta.T, e_phi.T
+    data = np.column_stack([PH.ravel(), TH.ravel(), et.real.ravel(), et.imag.ravel(), ep.real.ravel(), ep.imag.ravel()])
+    with open(path, 'w') as fh:
+        fh.write("\n".join(hdr) + "\n")
+        np.savetxt(fh, data, fmt=['%8.3f', '%8.3f', '%15.7e', '%15.7e', '%15.7e', '%15.7e'])
 
 
 # ============================================================================ Touchstone
