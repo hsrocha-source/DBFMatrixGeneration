@@ -8,7 +8,7 @@ with a 48 × 10 digital feed array, receive beams over ±15° elevation × ±3°
 | `reflector_po.py` | occasional physical-optics check: plane-wave PO currents, field at the element centres, capture / cross-pol / centroid per beam |
 | `dbf_cfm.py` | first DBF matrix: CST embedded element patterns (.ffs) + PO on the reflector (GPU via JAX) -> steering matrices and conjugate-field-matched weights per frequency and polarization |
 | `cst_io.py` | readers for CST farfield sources (.ffs), Touchstone (.sNp) and the port map; `python cst_io.py FILE` inspects a file |
-| `cst/` | CST export macro and the port map of the 10 x 8 EEP model |
+| `cst/` | CST export macro, the port map of the 10 x 8 EEP model, and the asymptotic-solver comparison (`ASOLVER.md`) |
 | `designs/` | optimised reflector design (JSON) and its STL |
 | `docs/dbf_matrix_procedure.md` | procedure for building the DBF matrix from CST embedded element patterns + PO, and where it is (and is not) valid |
 | `tests/` | `pytest` regression tests |

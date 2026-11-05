@@ -18,7 +18,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import reflector_go as G  # noqa: E402
-from cst_io import ETA0, read_port_map  # noqa: E402
+from cst_io import ETA0, read_port_map, write_ffs  # noqa: E402,F401
 from dbf_cfm import cst_element_centre  # noqa: E402
 
 PORT_MAP = os.path.join(os.path.dirname(HERE), 'cst', 'port_map.csv')
@@ -41,24 +41,6 @@ def sphere_power(theta, phi, e_theta, e_phi):
     p = np.abs(e_theta)**2 + np.abs(e_phi)**2
     trapz = getattr(np, 'trapezoid', None) or np.trapz
     return trapz(p.sum(axis=1) * (2 * np.pi / len(phi)) * np.sin(theta), theta) / (2 * ETA0)
-
-
-def write_ffs(path, theta_deg, phi_deg, e_theta, e_phi, freq_hz, p_rad, p_acc, p_stim, position=(0, 0, 0)):
-    """CST farfield source (version 3.0 layout). phi_deg must include 360 like CST exports do."""
-    hdr = ["// CST Farfield Source File", " ", "// Version:", "3.0", " ", "// Data Type", "Farfield", " ",
-           "// #Frequencies", "1", " ", "// Position", " ".join(f"{v:.6e}" for v in position), " ",
-           "// zAxis", "0.000000e+00 0.000000e+00 1.000000e+00", " ",
-           "// xAxis", "1.000000e+00 0.000000e+00 0.000000e+00", " ",
-           "// Radiated/Accepted/Stimulated Power , Frequency",
-           f"{p_rad:.8e}", f"{p_acc:.8e}", f"{p_stim:.8e}", f"{freq_hz:.8e}", " ", " ",
-           "// >> Total #phi samples, total #theta samples", f"{len(phi_deg)} {len(theta_deg)}", " ",
-           "// >> Phi, Theta, Re(E_Theta), Im(E_Theta), Re(E_Phi), Im(E_Phi): "]
-    PH, TH = np.meshgrid(phi_deg, theta_deg, indexing='ij')            # phi outer, theta inner
-    et, ep = e_theta.T, e_phi.T
-    data = np.column_stack([PH.ravel(), TH.ravel(), et.real.ravel(), et.imag.ravel(), ep.real.ravel(), ep.imag.ravel()])
-    with open(path, 'w') as fh:
-        fh.write("\n".join(hdr) + "\n")
-        np.savetxt(fh, data, fmt=['%8.3f', '%8.3f', '%15.7e', '%15.7e', '%15.7e', '%15.7e'])
 
 
 def dummy_s(n_cols, n_rows, f_hz):
