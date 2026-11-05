@@ -426,18 +426,37 @@ def power_balance(eeps, classes, freqs, ts, say):
 
 
 # ============================================================================ plots
-def plot_frequency(out, f_mhz, az, el, res, beam_az, beam_el, cuts):
+# Figures carry no titles or words: axis labels are symbols with units, legends and panel tags are
+# values. What each figure shows is printed (and written to the summary) when it is saved.
+def _beam(az, el):
+    return f'az {az:g}°, el {el:g}°'
+
+
+def _tag(ax, text):
+    """Panel tag in the upper-left corner (symbols and values only)."""
+    ax.text(0.03, 0.97, text, transform=ax.transAxes, ha='left', va='top', fontsize=9,
+            bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.8))
+
+
+def _save(fig, path, description, say):
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    say(f"  figure {os.path.basename(path)}: {description}")
+
+
+def plot_frequency(out, f_mhz, az, el, res, beam_az, beam_el, cuts, say=print):
     for pol in ('H', 'V'):
         g = res[pol]['gain'].reshape(len(el), len(az))
         fig, ax = plt.subplots(figsize=(4.5, 6))
         im = ax.imshow(g, origin='lower', aspect='auto', extent=[az[0], az[-1], el[0], el[-1]], cmap='viridis')
-        fig.colorbar(im, ax=ax, label='CFM beam gain [dBi]')
-        ax.set_xlabel('az [deg]')
-        ax.set_ylabel('el [deg]')
-        ax.set_title(f'{pol} pol, {f_mhz:.0f} MHz')
+        fig.colorbar(im, ax=ax, label='G [dBi]')
+        ax.set_xlabel('az [°]')
+        ax.set_ylabel('el [°]')
+        _tag(ax, f'{pol}, {f_mhz:.0f} MHz')
         fig.tight_layout()
-        fig.savefig(os.path.join(out, f'gain_map_{pol}_{f_mhz:.0f}MHz.png'), dpi=120)
-        plt.close(fig)
+        _save(fig, os.path.join(out, f'gain_map_{pol}_{f_mhz:.0f}MHz.png'),
+              f"CFM beam gain G [dBi] of every beam of the grid, plotted at the beam's own direction "
+              f"(az, el); {pol} polarization, {f_mhz:.0f} MHz.", say)
 
     picks = [(0.0, 0.0), (0.0, el[-1]), (az[-1], el[-1])]
     fig, axes = plt.subplots(1, len(picks), figsize=(2.6 * len(picks), 7), sharey=True)
@@ -446,52 +465,62 @@ def plot_frequency(out, f_mhz, az, el, res, beam_az, beam_el, cuts):
         w = np.abs(res['H']['W'][:, k]).reshape(G.N_ELEM_Y, G.N_ELEM_X)
         im = ax.imshow(20 * np.log10(w / w.max() + 1e-12), origin='lower', vmin=-30, vmax=0, cmap='viridis',
                        extent=[-G.ARRAY_SIZE_X / 2, G.ARRAY_SIZE_X / 2, -G.ARRAY_SIZE_Y / 2, G.ARRAY_SIZE_Y / 2])
-        ax.set_title(f'H, az {beam_az[k]:g}, el {beam_el[k]:g}\n{res["H"]["n99"][k]} el. for 99 %', fontsize=9)
+        _tag(ax, f'{_beam(beam_az[k], beam_el[k])}\nN99 = {res["H"]["n99"][k]}')
         ax.set_xticks([-0.4, 0.0, 0.4])
         ax.set_xlabel('x [m]')
     axes[0].set_ylabel('y [m]')
     fig.colorbar(im, ax=list(axes), label='|w| [dB]', shrink=0.6)
-    fig.savefig(os.path.join(out, f'weights_H_{f_mhz:.0f}MHz.png'), dpi=120)
-    plt.close(fig)
+    _save(fig, os.path.join(out, f'weights_H_{f_mhz:.0f}MHz.png'),
+          f"CFM weight magnitude |w| [dB, 0 dB = strongest element] over the 10 x 48 array (x: azimuth "
+          f"axis, y: elevation axis, reflector frame) for the beams named in each panel; N99 = number of "
+          f"elements holding 99 % of the beam power; H polarization, {f_mhz:.0f} MHz.", say)
 
     if cuts is None:
         return
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    for ax, key, xlabel, sel in ((axes[0], 'el', 'el [deg]', lambda: [(0.0, e) for e in np.linspace(el[0], el[-1], 5)]),
-                                 (axes[1], 'az', 'az [deg]', lambda: [(a, 0.0) for a in np.linspace(az[0], az[-1], 5)])):
+    for ax, key, xlabel, tag, sel in (
+            (axes[0], 'el', 'el [°]', 'H, az = 0°', lambda: [(0.0, e) for e in np.linspace(el[0], el[-1], 5)]),
+            (axes[1], 'az', 'az [°]', 'H, el = 0°', lambda: [(a, 0.0) for a in np.linspace(az[0], az[-1], 5)])):
         ang, A_cut = cuts[key]
         for a, e in sel():
             k = nearest_beam(beam_az, beam_el, a, e)
             ax.plot(ang, 10 * np.log10(2 * np.pi / ETA0 * np.abs(A_cut @ res['H']['W'][:, k])**2 + 1e-30),
-                    label=f'beam az {beam_az[k]:g}, el {beam_el[k]:g}')
+                    label=_beam(beam_az[k], beam_el[k]))
         ax.set_xlabel(xlabel)
-        ax.set_ylabel('gain [dBi]')
+        ax.set_ylabel('G [dBi]')
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=7)
+        ax.legend(fontsize=7, loc='upper right')
         top = max(line.get_ydata().max() for line in ax.get_lines())
         ax.set_ylim(top - 40, top + 2)
-    axes[0].set_title(f'H pol, elevation cut at az = 0, {f_mhz:.0f} MHz')
-    axes[1].set_title(f'H pol, azimuth cut at el = 0, {f_mhz:.0f} MHz')
+        _tag(ax, tag)
     fig.tight_layout()
-    fig.savefig(os.path.join(out, f'cuts_H_{f_mhz:.0f}MHz.png'), dpi=120)
-    plt.close(fig)
+    _save(fig, os.path.join(out, f'cuts_H_{f_mhz:.0f}MHz.png'),
+          f"Gain patterns G [dBi] of the CFM beams in the legend; left: elevation cut at az = 0 deg, "
+          f"right: azimuth cut at el = 0 deg; H polarization, {f_mhz:.0f} MHz.", say)
 
 
-def plot_gain_vs_el(out, freqs, az, el, results):
+def plot_gain_vs_el(out, freqs, az, el, results, say=print):
+    from matplotlib.lines import Line2D
     fig, axes = plt.subplots(1, 2, figsize=(11, 4), sharey=True)
     for ax, pol in zip(axes, ('H', 'V')):
+        handles = []
         for f in freqs:
             g = results[f][pol]['gain'].reshape(len(el), len(az))
-            line, = ax.plot(el, g[:, np.argmin(np.abs(az))], label=f'{f / 1e6:.0f} MHz, az 0')
+            line, = ax.plot(el, g[:, np.argmin(np.abs(az))], label=f'{f / 1e6:.0f} MHz')
             ax.plot(el, g[:, -1], ls='--', color=line.get_color(), lw=0.8)
-        ax.set_title(f'{pol} pol (dashed: az = {az[-1]:g})')
-        ax.set_xlabel('el [deg]')
+            handles.append(line)
+        ax.set_xlabel('el [°]')
         ax.grid(alpha=0.3)
-    axes[0].set_ylabel('CFM beam gain [dBi]')
-    axes[1].legend(fontsize=7, ncol=2)
+        _tag(ax, pol)
+    axes[0].set_ylabel('G [dBi]')
+    styles = [Line2D([], [], color='k', label=f'az {az[np.argmin(np.abs(az))]:g}°'),
+              Line2D([], [], color='k', ls='--', lw=0.8, label=f'az {az[-1]:g}°')]
+    axes[1].legend(handles=handles + styles, fontsize=7, ncol=2)
     fig.tight_layout()
-    fig.savefig(os.path.join(out, 'gain_vs_el.png'), dpi=120)
-    plt.close(fig)
+    _save(fig, os.path.join(out, 'gain_vs_el.png'),
+          f"CFM beam gain G [dBi] versus beam elevation, one colour per frequency; solid: beams at "
+          f"az = {az[np.argmin(np.abs(az))]:g} deg, dashed: beams at az = {az[-1]:g} deg; left H, right V "
+          f"polarization.", say)
 
 
 # ============================================================================ sub-band interpolation
@@ -631,17 +660,18 @@ def write_subbands(out_dir, step_mhz=None, centres_mhz=None, say=print):
     fig, ax = plt.subplots(figsize=(7, 4))
     for a_, e_ in ((0.0, 0.0), (0.0, el[-1]), (az[-1], el[-1])):
         k = nearest_beam(beam_az, beam_el, a_, e_)
-        line, = ax.plot(f_out / 1e6, [g[k] for g in gains['H']], label=f'H, beam az {beam_az[k]:g}, el {beam_el[k]:g}')
+        line, = ax.plot(f_out / 1e6, [g[k] for g in gains['H']], label=_beam(beam_az[k], beam_el[k]))
         ax.plot(freqs / 1e6, 10 * np.log10(2 * np.pi / ETA0 * np.sum(np.abs(Ad['H'][:, k])**2, axis=1)),
                 'o', color=line.get_color())
-    ax.set_xlabel('frequency [MHz]')
-    ax.set_ylabel('CFM beam gain [dBi]')
-    ax.set_title('Sub-band interpolation (lines) vs computed frequencies (dots)')
+    ax.set_xlabel('f [MHz]')
+    ax.set_ylabel('G [dBi]')
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
+    _tag(ax, 'H')
     fig.tight_layout()
-    fig.savefig(os.path.join(sub, 'subband_gain.png'), dpi=120)
-    plt.close(fig)
+    _save(fig, os.path.join(sub, 'subband_gain.png'),
+          "CFM beam gain G [dBi] versus frequency for the beams in the legend, H polarization; lines: "
+          "interpolated sub-band weights, dots: the computed CST frequencies.", note)
     log.close()
 
 
@@ -797,11 +827,11 @@ def main(argv=None):
                  field_scale=field_scale, design=os.path.abspath(args.design), F=F,
                  cst_array_center=cst_centre, **extra)
         say(f"  saved {out_npz}")
-        plot_frequency(args.out, f_mhz, az, el, res, beam_az, beam_el, cuts)
+        plot_frequency(args.out, f_mhz, az, el, res, beam_az, beam_el, cuts, say)
         for pol in ('H', 'V'):                        # keep only what the summary plot needs
             res[pol] = {'gain': res[pol]['gain']}
 
-    plot_gain_vs_el(args.out, freqs, az, el, results)
+    plot_gain_vs_el(args.out, freqs, az, el, results, say)
     if args.subband_step_mhz or args.subband_centers_mhz:
         write_subbands(args.out, say=say, **subbands)
     say(f"\nDone. Plots and summary in {args.out}")
